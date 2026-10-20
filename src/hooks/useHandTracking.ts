@@ -4,6 +4,7 @@ import type { RefObject } from 'react';
 import { drawHands } from '../components/WebcamPreview';
 import { GestureEngine } from '../gestures/gestureEngine';
 import type { Landmark } from '../gestures/types';
+import { mapHandToScreen, pointerController } from '../input/pointer';
 import { useGestureStore } from '../store/useGestureStore';
 import { usePlaybackStore } from '../store/usePlaybackStore';
 
@@ -13,6 +14,30 @@ const MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
 const engine = new GestureEngine();
+
+function activateHandTarget(x: number, y: number): void {
+  const target = document.elementFromPoint(x, y)?.closest<HTMLElement>(
+    'button, a, input, select, textarea, [role="button"], [data-gesture-click]',
+  );
+  if (!target || target.matches(':disabled')) return;
+
+  if (target instanceof HTMLInputElement && target.type === 'range') {
+    const bounds = target.getBoundingClientRect();
+    const min = Number(target.min || 0);
+    const max = Number(target.max || 100);
+    const step = Number(target.step || 1);
+    const fraction = Math.min(1, Math.max(0, (x - bounds.left) / bounds.width));
+    const value = min + fraction * (max - min);
+    const stepped = min + Math.round((value - min) / step) * step;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+    setter?.call(target, String(Math.min(max, Math.max(min, stepped))));
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+    return;
+  }
+
+  target.click();
+}
 
 async function createLandmarker(
   vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>,
@@ -68,6 +93,28 @@ export function useHandTracking(
       const { calibration, setGestureTransient } = store.getState();
       const gesture = engine.update(hands, now, calibration);
       setGestureTransient(gesture);
+
+      if (store.getState().controlMode === 'gesture' && hands[0]?.length >= 21) {
+          const tip = hands[0][8];
+          const position = mapHandToScreen(
+            { x: 1 - tip.x, y: tip.y },
+            { width: window.innerWidth, height: window.innerHeight },
+            0.9,
+            'left',
+          );
+          const previous = pointerController.get();
+          const wasPinching = previous.source === 'hand' && previous.down;
+          pointerController.setHand(position, gesture.kind === 'pinch');
+          if (gesture.kind === 'pinch' && !wasPinching) {
+            activateHandTarget(position.x, position.y);
+          }
+      } else {
+        const previous = pointerController.get();
+        if (previous.source === 'hand') {
+          pointerController.setHand(previous, false);
+        }
+      }
+
       const playback = usePlaybackStore.getState();
       for (const event of gesture.events) {
         if (event === 'toggle') playback.toggle();
@@ -165,6 +212,8 @@ export function useHandTracking(
       cancelled = true;
       cancelAnimationFrame(raf);
       engine.reset();
+      const pointer = pointerController.get();
+      if (pointer.source === 'hand') pointerController.setHand(pointer, false);
       landmarker?.close();
       landmarker = null;
       if (stream) {

@@ -1,5 +1,8 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { evaluateSwap, nextHint } from '../engine/challenge';
+import { buildQuestions } from '../engine/questions';
 import { ALGORITHMS, ALGORITHM_LIST, type AlgorithmId } from '../engine/registry';
+import { useModeStore, type AppMode } from '../store/useModeStore';
 import type { ArrayPreset } from '../store/usePlaybackStore';
 import { usePlaybackStore } from '../store/usePlaybackStore';
 import './ControlPanel.css';
@@ -12,6 +15,8 @@ const PRESETS: Array<{ id: ArrayPreset; label: string }> = [
 ];
 
 export function ControlPanel() {
+  const mode = useModeStore((state) => state.mode);
+  const setMode = useModeStore((state) => state.setMode);
   const algoId = usePlaybackStore((state) => state.algoId);
   const steps = usePlaybackStore((state) => state.steps);
   const stepIndex = usePlaybackStore((state) => state.stepIndex);
@@ -25,6 +30,8 @@ export function ControlPanel() {
   const setPreset = usePlaybackStore((state) => state.setPreset);
   const setSize = usePlaybackStore((state) => state.setSize);
   const generateArray = usePlaybackStore((state) => state.generateArray);
+  const array = usePlaybackStore((state) => state.array);
+  const swapIndices = usePlaybackStore((state) => state.swapIndices);
   const play = usePlaybackStore((state) => state.play);
   const pause = usePlaybackStore((state) => state.pause);
   const next = usePlaybackStore((state) => state.next);
@@ -34,6 +41,16 @@ export function ControlPanel() {
   const setSpeed = usePlaybackStore((state) => state.setSpeed);
   const metadata = ALGORITHMS[algoId];
   const comparisonCount = counters.comparisons.reduce((sum, count) => sum + count, 0) / 2;
+  const [challengeA, setChallengeA] = useState(0);
+  const [challengeB, setChallengeB] = useState(1);
+  const [challengeStatus, setChallengeStatus] = useState('');
+  const [predictIndex, setPredictIndex] = useState(0);
+  const [predictResult, setPredictResult] = useState('');
+  const questionMap = useMemo(() => buildQuestions(steps, array), [steps, array]);
+  const predictEntries = Array.from(questionMap.entries());
+  const predictQuestion = predictEntries[predictIndex] ?? null;
+
+  const modeTabs: AppMode[] = ['watch', 'challenge', 'predict'];
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent): void => {
@@ -70,6 +87,19 @@ export function ControlPanel() {
         <span className={`playback-state ${status}`}>{status}</span>
       </header>
 
+      <div className="mode-tabs" aria-label="Mode switcher">
+        {modeTabs.map((tab) => (
+          <button
+            key={tab}
+            type="button"
+            className={mode === tab ? 'selected' : ''}
+            onClick={() => setMode(tab)}
+          >
+            {tab === 'watch' ? 'Watch' : tab === 'challenge' ? 'Challenge' : 'Predict'}
+          </button>
+        ))}
+      </div>
+
       <label className="control-field">Algorithm
         <select value={algoId} onChange={(event) => setAlgorithm(event.target.value as AlgorithmId)}>
           {ALGORITHM_LIST.map((algorithm) => <option key={algorithm.id} value={algorithm.id}>{algorithm.name}</option>)}
@@ -92,6 +122,65 @@ export function ControlPanel() {
         <button aria-label="Next step" title="Next step" onClick={next}>Next</button>
         <button aria-label="Reset" title="Reset" onClick={reset}>Reset</button>
       </div>
+
+      {mode === 'challenge' && (
+        <div className="mode-panel challenge-panel">
+          <div className="mini-grid">
+            <label>
+              A
+              <input type="number" min={0} max={Math.max(0, size - 1)} value={challengeA} onChange={(event) => setChallengeA(Number(event.target.value))} />
+            </label>
+            <label>
+              B
+              <input type="number" min={0} max={Math.max(0, size - 1)} value={challengeB} onChange={(event) => setChallengeB(Number(event.target.value))} />
+            </label>
+          </div>
+          <div className="mode-actions">
+            <button onClick={() => {
+              const current = array;
+              const label = evaluateSwap(current, challengeA, challengeB);
+              setChallengeStatus(label === 'good' ? 'Good move' : label === 'neutral' ? 'Neutral move' : 'Bad move');
+              swapIndices(challengeA, challengeB);
+            }}>Apply swap</button>
+            <button onClick={() => {
+              const hint = nextHint(algoId, array);
+              if (!hint) {
+                setChallengeStatus('Sorted already');
+                return;
+              }
+              setChallengeA(hint.i);
+              setChallengeB(hint.j);
+              setChallengeStatus(`Hint: swap ${hint.i} and ${hint.j}`);
+            }}>Hint</button>
+            <button onClick={() => {
+              const restored = [...array].sort((a, b) => a - b);
+              usePlaybackStore.getState().setArray(restored);
+              setChallengeStatus('Reset to sorted state');
+            }}>Reset</button>
+          </div>
+          <strong className="mode-status">{challengeStatus || 'Choose a swap to improve the array.'}</strong>
+        </div>
+      )}
+
+      {mode === 'predict' && (
+        <div className="mode-panel predict-panel">
+          {predictQuestion ? (
+            <>
+              <strong>{predictQuestion[1].prompt}</strong>
+              <div className="mode-actions">
+                {predictQuestion[1].options.map((option, index) => (
+                  <button key={option} onClick={() => {
+                    const correct = predictQuestion[1].correctIndex === index;
+                    setPredictResult(correct ? 'Correct — ' + predictQuestion[1].explanation : 'Wrong — ' + predictQuestion[1].explanation);
+                    setPredictIndex((previous) => Math.min(previous + 1, Math.max(0, predictEntries.length - 1)));
+                  }}>{option}</button>
+                ))}
+              </div>
+              <small>{predictResult || 'Choose the best answer.'}</small>
+            </>
+          ) : <strong>No decision questions available for this run.</strong>}
+        </div>
+      )}
 
       <div className="control-field speed-field">
         <div className="field-heading"><label htmlFor="playback-speed">Speed</label><output>{speed.toFixed(2)}x</output></div>
@@ -118,7 +207,11 @@ export function ControlPanel() {
       </section>
 
       <p className="narration" aria-live="polite">{narration}</p>
-      <p className="gesture-hints">Fist = play / pause <span>|</span> Swipe = step <span>|</span> Pinch-drag = rotate <span>|</span> Two hands = zoom</p>
+      <p className="gesture-hints">
+        {mode === 'watch' && 'Fist = play / pause | Swipe = step | Pinch-drag = rotate | Two hands = zoom'}
+        {mode === 'challenge' && 'Pinch a bar to grab, drop on another bar to swap'}
+        {mode === 'predict' && 'Answer Yes/No or Left/Right with pinch targets at the bottom'}
+      </p>
       <p className="shortcut-hints">Space play/pause <span>Left/Right step</span> <span>Up/Down speed</span> <span>R reset</span></p>
     </aside>
   );

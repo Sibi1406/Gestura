@@ -32,6 +32,17 @@
 .playback-state { color: #9bb5c3; text-transform: uppercase; font: 10px Consolas, monospace; }
 .playback-state.playing { color: #93e4b5; }
 .playback-state.finished { color: #f1d878; }
+.mode-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0 0 12px; }
+.mode-tabs button { min-height: 36px; border: 1px solid #2d4959; border-radius: 6px; background: #101d27; color: #dce8ed; font-weight: 700; cursor: pointer; }
+.mode-tabs button.selected { background: linear-gradient(135deg, #164b60, #1e7a7a); border-color: #7fd6d6; box-shadow: inset 0 0 0 1px rgba(255,255,255,0.12); }
+.mode-panel { display: grid; gap: 8px; margin: 10px 0 14px; padding: 9px; border: 1px solid rgba(133, 180, 203, 0.25); border-radius: 6px; background: rgba(17, 29, 39, 0.8); }
+.mini-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mini-grid label { display: grid; gap: 4px; color: #b9c8cf; }
+.mini-grid input { width: 100%; padding: 7px; border: 1px solid #355367; border-radius: 4px; background: #12212d; color: #eff5f7; }
+.mode-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.mode-actions button { flex: 1 1 42%; min-height: 30px; padding: 6px 8px; border: 1px solid #385a68; border-radius: 4px; background: #12313d; color: #ebf5f6; cursor: pointer; }
+.mode-status { color: #c8f4d7; font-size: 11px; }
+.predict-panel small { color: #bfdce0; }
 .control-field { display: block; margin: 11px 0; color: #acbec8; }
 .control-field select { display: block; width: 100%; margin-top: 6px; padding: 8px; border: 1px solid #355367; border-radius: 4px; background: #14232e; color: #eff5f7; }
 .field-heading output { color: #eaf4f7; font: 11px Consolas, monospace; }

@@ -25,6 +25,8 @@ type PlaybackStore = {
   setPreset: (preset: ArrayPreset) => void;
   setSize: (size: number) => void;
   generateArray: (preset: ArrayPreset) => void;
+  setArray: (values: number[]) => void;
+  swapIndices: (i: number, j: number) => void;
   play: () => void;
   pause: () => void;
   toggle: () => void;
@@ -108,6 +110,20 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
       const steps = buildSteps(state.algoId, array);
       accumulatedSeconds = 0;
       set({ array, preset, steps, initialBars: bars, barIds: bars.map((bar) => bar.id), ...positioned(bars, steps, 0), status: 'idle' });
+    },
+    setArray: (values) => {
+      const state = get();
+      const bars = createInitialBars(values);
+      const steps = buildSteps(state.algoId, values);
+      accumulatedSeconds = 0;
+      set({ array: values, steps, initialBars: bars, barIds: bars.map((bar) => bar.id), ...positioned(bars, steps, 0), status: 'idle' });
+    },
+    swapIndices: (i, j) => {
+      const state = get();
+      if (!state.array[i] || !state.array[j]) return;
+      const next = [...state.array];
+      [next[i], next[j]] = [next[j], next[i]];
+      get().setArray(next);
     },
     play: () => {
       const state = get();

@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { CursorOverlay } from './components/CursorOverlay';
 import { HUD } from './components/HUD';
 import { ControlPanel } from './components/ControlPanel';
 import { SortingScene } from './components/SortingScene';
@@ -13,6 +14,7 @@ export default function App() {
   return (
     <>
       <SortingScene />
+      <CursorOverlay />
       <HUD />
       <ControlPanel />
       <WebcamPreview videoRef={videoRef} canvasRef={canvasRef} />
