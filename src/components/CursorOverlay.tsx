@@ -1,19 +1,25 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { pointerController } from '../input/pointer';
 
 export function CursorOverlay() {
-  const [pointer, setPointer] = useState(pointerController.get());
+  const cursorRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let frame = 0;
     const tick = (): void => {
-      const next = pointerController.get();
-      setPointer((previous) =>
-        previous.x === next.x && previous.y === next.y &&
-        previous.down === next.down && previous.source === next.source
-          ? previous
-          : next,
-      );
+      const cursor = cursorRef.current;
+      if (cursor) {
+        const pointer = pointerController.get();
+        cursor.style.left = `${pointer.x}px`;
+        cursor.style.top = `${pointer.y}px`;
+        cursor.className = [
+          'gesture-cursor',
+          pointer.down ? 'down' : '',
+          pointer.source === 'hand' ? 'hand' : '',
+          pointer.hoverTargetId ? 'hover' : '',
+          pointer.grab.kind === 'object' ? 'object' : '',
+        ].filter(Boolean).join(' ');
+      }
       frame = requestAnimationFrame(tick);
     };
     const onMove = (event: PointerEvent): void => {
@@ -31,21 +37,15 @@ export function CursorOverlay() {
     window.addEventListener('pointerdown', onDown);
     window.addEventListener('pointerup', onUp);
     window.addEventListener('pointerleave', onUp);
-
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener('pointermove', onMove);
       window.removeEventListener('pointerdown', onDown);
       window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointerleave', onUp);
+      document.querySelectorAll('.gesture-hover').forEach((element) => element.classList.remove('gesture-hover'));
     };
   }, []);
 
-  return (
-    <div
-      className={`gesture-cursor ${pointer.down ? 'down' : ''} ${pointer.source === 'hand' ? 'hand' : ''}`}
-      style={{ left: `${pointer.x}px`, top: `${pointer.y}px` }}
-      aria-hidden="true"
-    />
-  );
+  return <div ref={cursorRef} className="gesture-cursor" aria-hidden="true" />;
 }

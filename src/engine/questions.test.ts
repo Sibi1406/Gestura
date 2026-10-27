@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildQuestions } from './questions';
-import { buildSteps } from './player';
+import { buildSteps, stateAt } from './player';
 
 describe('question builder', () => {
   it('builds valid questions for each algorithm on representative inputs', () => {
@@ -37,6 +37,32 @@ describe('question builder', () => {
           expect(question.correctIndex).toBeGreaterThanOrEqual(0);
           expect(question.correctIndex).toBeLessThan(question.options.length);
         }
+      }
+    }
+  });
+
+  it('uses the values at each evolving comparison to choose the right answer', () => {
+    const input = [4, 1, 3, 2];
+    for (const algorithm of ['bubbleSort', 'insertionSort', 'mergeSort', 'quickSort'] as const) {
+      const steps = buildSteps(algorithm, input);
+      const questions = buildQuestions(steps, input);
+      for (const [index, question] of questions) {
+        const step = steps[index];
+        if (step.type !== 'compare') throw new Error('Question must attach to a comparison.');
+        const before = stateAt(
+          input.map((value, barIndex) => ({ id: `bar-${barIndex}`, value, status: 'idle' as const })),
+          steps,
+          index,
+        );
+        const left = before[step.i].value;
+        const right = before[step.j].value;
+        const expected = step.line === 8
+          ? Number(left > right)
+          : step.line === 7
+            ? Number(left > right)
+            : Number(left <= right);
+        expect(question.correctIndex).toBe(expected);
+        expect(question.barIndices).toEqual([step.i, step.j]);
       }
     }
   });

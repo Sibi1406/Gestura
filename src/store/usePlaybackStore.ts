@@ -1,13 +1,23 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 import { ALGORITHMS, type AlgorithmId } from '../engine/registry';
-import { applyStep, createInitialBars } from '../engine/reducer';
-import { buildSteps, countStep, countersAt, describeStep, stateAt } from '../engine/player';
+import { createInitialBars } from '../engine/reducer';
+import { buildSteps, countersAt } from '../engine/player';
 import type { BarState, IndexCounters, Step } from '../engine/types';
+import { gestureSettingsStorage } from './useGestureStore';
+import { valuesFor } from './arrayValues';
+import { deduplicatingStorage } from './deduplicatingStorage';
+import { rebuildEditedData } from '../engine/dataEdit';
+import { positioned } from './playbackHelpers';
+import { createPlaybackPersistenceOptions } from './playbackPersistence';
+import { tickPlayback } from './playbackTick';
+
+const playbackSettingsStorage = deduplicatingStorage(gestureSettingsStorage);
 
 export type ArrayPreset = 'random' | 'reversed' | 'nearly-sorted' | 'few-unique';
 export type PlaybackStatus = 'idle' | 'playing' | 'paused' | 'finished';
 
-type PlaybackStore = {
+export type PlaybackStore = {
   algoId: AlgorithmId;
   array: number[];
   steps: Step[];
@@ -21,11 +31,15 @@ type PlaybackStore = {
   barState: BarState;
   counters: IndexCounters;
   narration: string;
+  editFeedback: string | null;
+  hasEditedData: boolean;
   setAlgorithm: (algoId: AlgorithmId) => void;
   setPreset: (preset: ArrayPreset) => void;
   setSize: (size: number) => void;
   generateArray: (preset: ArrayPreset) => void;
   setArray: (values: number[]) => void;
+  editValue: (index: number, value: number) => void;
+  resetData: () => void;
   swapIndices: (i: number, j: number) => void;
   play: () => void;
   pause: () => void;
@@ -35,39 +49,12 @@ type PlaybackStore = {
   reset: () => void;
   seek: (index: number) => void;
   setSpeed: (speed: number) => void;
-  tick: (deltaSeconds: number) => void;
+  tick: (deltaSeconds: number, stopAtIndex?: number) => void;
 };
 
-const BASE_RATE = 8;
-
-function valuesFor(size: number, preset: ArrayPreset): number[] {
-  const values = Array.from({ length: size }, (_, index) => index * 2 + 10);
-  if (preset === 'random') {
-    return values.map(() => Math.floor(Math.random() * 90) + 10);
-  }
-  if (preset === 'reversed') return values.reverse();
-  if (preset === 'nearly-sorted') {
-    const middle = Math.floor(size / 2);
-    if (size > 2) [values[middle - 1], values[middle]] = [values[middle], values[middle - 1]];
-    return values;
-  }
-  return values.map((_, index) => [18, 52, 86][index % 3]);
-}
-
-function positioned(initial: BarState, steps: Step[], index: number) {
-  const clamped = Math.max(0, Math.min(steps.length, Math.floor(index)));
-  const before = clamped > 0 ? stateAt(initial, steps, clamped - 1) : initial;
-  const step = clamped > 0 ? steps[clamped - 1] : undefined;
-  return {
-    stepIndex: clamped,
-    barState: stateAt(initial, steps, clamped),
-    counters: countersAt(initial.length, steps, clamped),
-    narration: describeStep(step, before),
-  };
-}
-
-export const usePlaybackStore = create<PlaybackStore>((set, get) => {
+export const usePlaybackStore = create<PlaybackStore>()(persist((set, get) => {
   let accumulatedSeconds = 0;
+  let editBaseline: number[] | null = null;
   const initialArray = valuesFor(16, 'random');
   const initialBars = createInitialBars(initialArray);
   const initialSteps = buildSteps('bubbleSort', initialArray);
@@ -93,6 +80,8 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
     barState: initialBars,
     counters: countersAt(initialBars.length, initialSteps, 0),
     narration: 'Ready to sort.',
+    editFeedback: null,
+    hasEditedData: false,
 
     setAlgorithm: (algoId) => {
       const state = get();
@@ -109,14 +98,44 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
       const bars = createInitialBars(array);
       const steps = buildSteps(state.algoId, array);
       accumulatedSeconds = 0;
-      set({ array, preset, steps, initialBars: bars, barIds: bars.map((bar) => bar.id), ...positioned(bars, steps, 0), status: 'idle' });
+      editBaseline = null;
+      set({ array, preset, steps, initialBars: bars, barIds: bars.map((bar) => bar.id), ...positioned(bars, steps, 0), status: 'idle', editFeedback: null, hasEditedData: false });
     },
     setArray: (values) => {
       const state = get();
       const bars = createInitialBars(values);
       const steps = buildSteps(state.algoId, values);
       accumulatedSeconds = 0;
-      set({ array: values, steps, initialBars: bars, barIds: bars.map((bar) => bar.id), ...positioned(bars, steps, 0), status: 'idle' });
+      editBaseline = null;
+      set({ array: values, steps, initialBars: bars, barIds: bars.map((bar) => bar.id), ...positioned(bars, steps, 0), status: 'idle', editFeedback: null, hasEditedData: false });
+    },
+    editValue: (index, value) => {
+      const state = get();
+      if (state.status === 'playing' || state.stepIndex !== 0 || !state.array[index]) return;
+      if (Math.max(1, Math.min(100, Math.round(value))) === state.array[index]) return;
+      editBaseline ??= [...state.array];
+      const rebuilt = rebuildEditedData(state.algoId, state.array, state.steps, index, value);
+      accumulatedSeconds = 0;
+      set({
+        array: rebuilt.array, steps: rebuilt.steps, initialBars: rebuilt.initialBars,
+        barIds: rebuilt.initialBars.map((bar) => bar.id),
+        ...positioned(rebuilt.initialBars, rebuilt.steps, 0), status: 'idle',
+        hasEditedData: true,
+        editFeedback: rebuilt.editFeedback,
+      });
+    },
+    resetData: () => {
+      if (!editBaseline) return;
+      const values = [...editBaseline];
+      editBaseline = null;
+      const state = get();
+      const bars = createInitialBars(values);
+      const steps = buildSteps(state.algoId, values);
+      accumulatedSeconds = 0;
+      set({
+        array: values, steps, initialBars: bars, barIds: bars.map((bar) => bar.id),
+        ...positioned(bars, steps, 0), status: 'idle', editFeedback: 'Data reset to the original array.', hasEditedData: false,
+      });
     },
     swapIndices: (i, j) => {
       const state = get();
@@ -129,9 +148,9 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
       const state = get();
       if (state.stepIndex >= state.steps.length) {
         const position = positioned(state.initialBars, state.steps, 0);
-        set({ ...position, status: 'playing' });
+        set({ ...position, status: 'playing', editFeedback: null });
       } else {
-        set({ status: 'playing' });
+        set({ status: 'playing', editFeedback: null });
       }
       accumulatedSeconds = 0;
     },
@@ -140,8 +159,8 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
       accumulatedSeconds = 0;
     },
     toggle: () => (get().status === 'playing' ? get().pause() : get().play()),
-    next: () => advanceManually(get().stepIndex + 1),
-    prev: () => advanceManually(get().stepIndex - 1),
+    next: () => { set({ editFeedback: null }); advanceManually(get().stepIndex + 1); },
+    prev: () => { set({ editFeedback: null }); advanceManually(get().stepIndex - 1); },
     reset: () => {
       const state = get();
       accumulatedSeconds = 0;
@@ -149,37 +168,12 @@ export const usePlaybackStore = create<PlaybackStore>((set, get) => {
     },
     seek: (index) => advanceManually(index),
     setSpeed: (speed) => set({ speed: Math.max(0.25, Math.min(4, speed)) }),
-    tick: (deltaSeconds) => {
-      const state = get();
-      if (state.status !== 'playing') return;
-      accumulatedSeconds += Math.max(0, deltaSeconds);
-      const interval = 1 / (BASE_RATE * state.speed);
-      let due = Math.floor(accumulatedSeconds / interval);
-      if (due === 0) return;
-      accumulatedSeconds -= due * interval;
-
-      let barState = state.barState;
-      let counters = state.counters;
-      let stepIndex = state.stepIndex;
-      let previousState = barState;
-      while (due > 0 && stepIndex < state.steps.length) {
-        previousState = barState;
-        const step = state.steps[stepIndex];
-        barState = applyStep(barState, step);
-        counters = countStep(counters, step);
-        stepIndex += 1;
-        due -= 1;
-      }
-      const currentStep = state.steps[stepIndex - 1];
-      set({
-        stepIndex,
-        barState,
-        counters,
-        narration: describeStep(currentStep, previousState),
-        status: stepIndex >= state.steps.length ? 'finished' : 'playing',
-      });
+    tick: (deltaSeconds, stopAtIndex) => {
+      const result = tickPlayback(get(), accumulatedSeconds, deltaSeconds, stopAtIndex);
+      accumulatedSeconds = result.elapsed;
+      if (result.update) set(result.update);
     },
   };
-});
+}, createPlaybackPersistenceOptions(playbackSettingsStorage)));
 
 export { ALGORITHMS };

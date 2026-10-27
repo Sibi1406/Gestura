@@ -55,11 +55,12 @@ export function drawHands(
 type Props = {
   videoRef: RefObject<HTMLVideoElement | null>;
   canvasRef: RefObject<HTMLCanvasElement | null>;
+  hidden?: boolean;
 };
 
-export function WebcamPreview({ videoRef, canvasRef }: Props) {
+export function WebcamPreview({ videoRef, canvasRef, hidden = false }: Props) {
   return (
-    <div className="webcam">
+    <div className={`webcam${hidden ? ' hidden' : ''}`}>
       <video
         ref={videoRef}
         className="webcam-video"

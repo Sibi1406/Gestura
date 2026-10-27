@@ -27,6 +27,12 @@ export type Calibration = {
   swipeVelocity: number;
   swipeCooldownMs: number;
   fistCooldownMs: number;
+  cursorMinCutoff: number;
+  cursorBeta: number;
+  dwellClick: boolean;
+  dwellMs: number;
+  activeRegion: number;
+  dominantHand: 'auto' | 'left' | 'right';
 };
 
 export type GestureEvent = 'toggle' | 'next' | 'prev';
@@ -55,6 +61,12 @@ export const DEFAULT_CALIBRATION: Calibration = {
   swipeVelocity: 1.5,
   swipeCooldownMs: 500,
   fistCooldownMs: 600,
+  cursorMinCutoff: 1.0,
+  cursorBeta: 0.007,
+  dwellClick: false,
+  dwellMs: 900,
+  activeRegion: 0.8,
+  dominantHand: 'auto',
 };
 
 export const PINCH_DEBOUNCE_MS = 80;

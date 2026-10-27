@@ -1,54 +1,17 @@
-import { FilesetResolver, HandLandmarker } from '@mediapipe/tasks-vision';
+import type { HandLandmarker } from '@mediapipe/tasks-vision';
 import { useEffect } from 'react';
 import type { RefObject } from 'react';
 import { drawHands } from '../components/WebcamPreview';
 import { GestureEngine } from '../gestures/gestureEngine';
+import { Vec2EuroFilter } from '../gestures/oneEuroFilter';
 import type { Landmark } from '../gestures/types';
 import { mapHandToScreen, pointerController } from '../input/pointer';
 import { useGestureStore } from '../store/useGestureStore';
 import { usePlaybackStore } from '../store/usePlaybackStore';
-
-const WASM_URL =
-  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.1.1/wasm';
-const MODEL_URL =
-  'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+import { useModeStore } from '../store/useModeStore';
+import { loadHandLandmarker } from './handTrackingLoader';
 
 const engine = new GestureEngine();
-
-function activateHandTarget(x: number, y: number): void {
-  const target = document.elementFromPoint(x, y)?.closest<HTMLElement>(
-    'button, a, input, select, textarea, [role="button"], [data-gesture-click]',
-  );
-  if (!target || target.matches(':disabled')) return;
-
-  if (target instanceof HTMLInputElement && target.type === 'range') {
-    const bounds = target.getBoundingClientRect();
-    const min = Number(target.min || 0);
-    const max = Number(target.max || 100);
-    const step = Number(target.step || 1);
-    const fraction = Math.min(1, Math.max(0, (x - bounds.left) / bounds.width));
-    const value = min + fraction * (max - min);
-    const stepped = min + Math.round((value - min) / step) * step;
-    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-    setter?.call(target, String(Math.min(max, Math.max(min, stepped))));
-    target.dispatchEvent(new Event('input', { bubbles: true }));
-    target.dispatchEvent(new Event('change', { bubbles: true }));
-    return;
-  }
-
-  target.click();
-}
-
-async function createLandmarker(
-  vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>,
-  delegate: 'GPU' | 'CPU',
-): Promise<HandLandmarker> {
-  return HandLandmarker.createFromOptions(vision, {
-    baseOptions: { modelAssetPath: MODEL_URL, delegate },
-    runningMode: 'VIDEO',
-    numHands: 2,
-  });
-}
 
 export function useHandTracking(
   videoRef: RefObject<HTMLVideoElement | null>,
@@ -63,6 +26,7 @@ export function useHandTracking(
     let frames = 0;
     let fpsWindow = performance.now();
     let hudAt = 0;
+    const cursorFilter = new Vec2EuroFilter();
 
     const store = useGestureStore;
     store.getState().setStatus('loading');
@@ -91,35 +55,46 @@ export function useHandTracking(
       if (ctx) drawHands(ctx, hands);
 
       const { calibration, setGestureTransient } = store.getState();
+      cursorFilter.setParams(calibration.cursorMinCutoff, calibration.cursorBeta);
+      pointerController.setDwellSettings(calibration.dwellClick, calibration.dwellMs);
       const gesture = engine.update(hands, now, calibration);
       setGestureTransient(gesture);
 
-      if (store.getState().controlMode === 'gesture' && hands[0]?.length >= 21) {
-          const tip = hands[0][8];
-          const position = mapHandToScreen(
-            { x: 1 - tip.x, y: tip.y },
-            { width: window.innerWidth, height: window.innerHeight },
-            0.9,
-            'left',
-          );
-          const previous = pointerController.get();
-          const wasPinching = previous.source === 'hand' && previous.down;
-          pointerController.setHand(position, gesture.kind === 'pinch');
-          if (gesture.kind === 'pinch' && !wasPinching) {
-            activateHandTarget(position.x, position.y);
-          }
+      const { handednesses } = result;
+      const dominantHand = calibration.dominantHand;
+      const selectedHandIndex = dominantHand === 'auto'
+        ? 0
+        : handednesses.findIndex((categories) => categories[0]?.categoryName.toLowerCase() === dominantHand);
+      const pointerHand = selectedHandIndex >= 0 ? hands[selectedHandIndex] : undefined;
+      if (store.getState().controlMode === 'gesture' && pointerHand && pointerHand.length >= 21) {
+        const isPinching = gesture.kind === 'pinch';
+        const tip = isPinching
+          ? { x: (pointerHand[4].x + pointerHand[8].x) / 2, y: (pointerHand[4].y + pointerHand[8].y) / 2 }
+          : pointerHand[8];
+        const mirrored = { x: 1 - tip.x, y: tip.y };
+        const filtered = cursorFilter.filter(mirrored.x, mirrored.y, now / 1000);
+        const position = mapHandToScreen(
+          filtered,
+          { width: window.innerWidth, height: window.innerHeight },
+          calibration.activeRegion,
+          dominantHand,
+        );
+        pointerController.setHand(position, isPinching);
       } else {
         const previous = pointerController.get();
         if (previous.source === 'hand') {
           pointerController.setHand(previous, false);
         }
+        cursorFilter.reset();
       }
 
-      const playback = usePlaybackStore.getState();
-      for (const event of gesture.events) {
-        if (event === 'toggle') playback.toggle();
-        else if (event === 'next') playback.next();
-        else if (event === 'prev') playback.prev();
+      if (useModeStore.getState().mode === 'watch') {
+        const playback = usePlaybackStore.getState();
+        for (const event of gesture.events) {
+          if (event === 'toggle') playback.toggle();
+          else if (event === 'next') playback.next();
+          else if (event === 'prev') playback.prev();
+        }
       }
 
       frames += 1;
@@ -183,20 +158,8 @@ export function useHandTracking(
       if (cancelled) return;
 
       try {
-        const vision = await FilesetResolver.forVisionTasks(WASM_URL);
-        if (cancelled) return;
-        let created: HandLandmarker;
-        try {
-          created = await createLandmarker(vision, 'GPU');
-        } catch {
-          if (cancelled) return;
-          created = await createLandmarker(vision, 'CPU');
-        }
-        if (cancelled) {
-          created.close();
-          return;
-        }
-        landmarker = created;
+        landmarker = await loadHandLandmarker(() => cancelled);
+        if (!landmarker) return;
       } catch {
         if (!cancelled) store.getState().setStatus('model_error');
         return;
@@ -212,6 +175,7 @@ export function useHandTracking(
       cancelled = true;
       cancelAnimationFrame(raf);
       engine.reset();
+      cursorFilter.reset();
       const pointer = pointerController.get();
       if (pointer.source === 'hand') pointerController.setHand(pointer, false);
       landmarker?.close();
